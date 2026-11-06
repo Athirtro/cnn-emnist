@@ -10,6 +10,7 @@ con simulación de entrenamiento distribuido mediante acumulación de gradiente.
 | `cnn.py` | Modelo (`CNN`, `Conv2D`, `MaxPool2D`, `Flatten`, `Dense`), registros `ACTIVATIONS`/`INITIALIZERS`, `Worker`, `Aggregator`, `Trainer`, `load_emnist`, `run_experiment`, `plot_history` |
 | `test_cnn.py` | Verificaciones obligatorias (pytest) |
 | `notebook.py` | Cuaderno [marimo](https://marimo.io) que evalúa solo los casos de workers (1, 2, 4, 8) con reparto equitativo |
+| `cnn.md` | Explicación de cómo funciona una CNN partiendo de la MLP del cuaderno |
 | `pyproject.toml` | Proyecto gestionado con [uv](https://docs.astral.sh/uv/) |
 
 ## Backend NumPy/CuPy (`xp`)
