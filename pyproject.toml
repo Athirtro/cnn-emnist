@@ -1,0 +1,18 @@
+[project]
+name = "cnn-emnist"
+version = "0.1.0"
+description = "CNN from scratch with NumPy and simulated distributed training on EMNIST Balanced"
+requires-python = ">=3.14"
+dependencies = [
+    "numpy>=2.0",
+    "matplotlib>=3.8",
+    "torch>=2.0",
+    "torchvision>=0.20",
+    "marimo>=0.25",
+]
+
+[tool.uv]
+package = false
+
+[dependency-groups]
+dev = ["pytest>=8.0"]
