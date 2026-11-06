@@ -1,5 +1,6 @@
 # /// script
 # dependencies = [
+#     "cupy-cuda13x>=14.0",
 #     "marimo",
 #     "matplotlib>=3.8",
 #     "numpy>=2.0",
@@ -18,9 +19,9 @@ app = marimo.App(width="medium")
 @app.cell
 def _(mo):
     mo.md(r"""
-    # EMNIST — CNN NumPy + Simulación Distribuida
+    # EMNIST — CNN NumPy/CuPy + Simulación Distribuida
 
-    CNN implementada desde cero solo con **NumPy** (`cnn.py`), sin autograd.
+    CNN implementada desde cero solo con **NumPy/CuPy** (`cnn.py`), sin autograd.
     Simulación distribuida por acumulación de gradiente: `Worker` → `Aggregator` → `Trainer`,
     comunicados solo por mensajes de datos.
     """)
@@ -30,11 +31,41 @@ def _(mo):
 @app.cell
 def _():
     import marimo as mo
-    import numpy as np
-    import matplotlib.pyplot as plt
-    from cnn import CNN, Worker, Aggregator, Trainer, load_emnist, run_experiment, plot_history
 
-    return load_emnist, mo, plt, run_experiment
+    # Fallback al principio: CuPy (GPU) si está disponible, NumPy si no.
+    # El modelo (`cnn.py`) usa el mismo alias ``xp`` (= cp o np).
+    import os
+
+    try:
+        if os.environ.get("CNN_BACKEND", "").lower() == "numpy":
+            raise ImportError("CNN_BACKEND=numpy forzado")
+        import cupy as xp
+
+        if xp.cuda.runtime.getDeviceCount() < 1:
+            raise RuntimeError("CuPy sin dispositivos CUDA")
+        BACKEND = "CuPy"
+        _device = xp.cuda.runtime.getDeviceProperties(0)["name"]
+        _device = _device.decode() if isinstance(_device, bytes) else str(_device)
+        _msg = f"Trabajando con **CuPy** (`xp = cp`) en GPU: `{_device}`."
+    except Exception:
+        import numpy as xp
+
+        BACKEND = "NumPy"
+        _msg = "Trabajando con **NumPy** (`xp = np`) como respaldo (CuPy no disponible)."
+
+    from cnn import BACKEND as CNN_BACKEND
+
+    assert CNN_BACKEND == BACKEND, f"backend del cuaderno ({BACKEND}) != del modelo ({CNN_BACKEND})"
+    mo.md(_msg + f" Backend del modelo (`cnn.BACKEND`): **{CNN_BACKEND}**.")
+    return BACKEND, mo, xp
+
+
+@app.cell
+def _(mo):
+    import matplotlib.pyplot as plt
+    from cnn import load_emnist, run_experiment
+
+    return load_emnist, plt, run_experiment
 
 
 @app.cell(hide_code=True)

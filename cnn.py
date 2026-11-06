@@ -1,4 +1,9 @@
-"""CNN from scratch (NumPy only) + simulated distributed training.
+"""CNN from scratch (NumPy/CuPy, alias ``xp``) + simulated distributed training.
+
+Backend: CuPy on GPU if importable (`` xp = cp``), NumPy as fallback
+(``xp = np``); see ``BACKEND`` at top of module and the try/except block at
+the start of ``notebook.py``. The only code change between backends is the
+``np`` -> ``xp`` alias (host shuffle indices and ``load_emnist`` stay NumPy).
 
 Technique replicated from the reference notebook:
 - Activation registry (dataclass with fn/deriv as functions of output A)
@@ -7,22 +12,38 @@ Technique replicated from the reference notebook:
   back_prop returns grads; softmax+cross-entropy with dZ = A - Y.
 - Plain SGD (no momentum/state), gradients normalised by batch size
   (``normalize=True``); workers can request unnormalised SUM grads.
-- Explicit seed and separate NumPy generators for init and shuffling.
+- Explicit seed and separate generators for init and shuffling.
 
-No autograd / torch / cupy is used in the model. torchvision is used
-only in :func:`load_emnist` to download EMNIST once, then converted
-to NumPy.
+No autograd / torch is used in the model. torchvision is used only in
+:func:`load_emnist` to download EMNIST once, then converted to NumPy (host).
 """
 from __future__ import annotations
 
 import copy
+import os
 import time
 from dataclasses import dataclass, field
 from typing import Callable
 
-import numpy as np
+import numpy as np  # host: load_emnist, índices/barajado
+
+# Backend de cómputo: CuPy en GPU si está disponible, NumPy como respaldo.
+# Todo el modelo usa el alias ``xp`` (cp o np), sin bucles por píxel.
+try:
+    if os.environ.get("CNN_BACKEND", "").lower() == "numpy":
+        raise ImportError("CNN_BACKEND=numpy forzado")
+    import cupy as xp
+
+    if xp.cuda.runtime.getDeviceCount() < 1:
+        raise RuntimeError("CuPy sin dispositivos CUDA")
+    BACKEND = "CuPy"
+except Exception:
+    import numpy as xp
+
+    BACKEND = "NumPy"
 
 __all__ = [
+    "xp", "BACKEND",
     "Activation", "ACTIVATIONS", "INITIALIZERS",
     "Conv2D", "MaxPool2D", "Flatten", "Dense", "CNN",
     "WorkerMessage", "Worker", "Aggregator", "Trainer",
@@ -34,9 +55,9 @@ __all__ = [
 # ---------------------------------------------------------------- registries
 # Initializers: (n_in, n_out, rng) -> array shape (n_out, n_in), float32
 INITIALIZERS: dict[str, Callable[..., np.ndarray]] = {
-    "small":  lambda n_in, n_out, rng: (rng.standard_normal((n_out, n_in)) * 0.01).astype(np.float32),
-    "xavier": lambda n_in, n_out, rng: (rng.standard_normal((n_out, n_in)) * (1 / n_in) ** 0.5).astype(np.float32),
-    "he":     lambda n_in, n_out, rng: (rng.standard_normal((n_out, n_in)) * (2 / n_in) ** 0.5).astype(np.float32),
+    "small":  lambda n_in, n_out, rng: (rng.standard_normal((n_out, n_in)) * 0.01).astype(xp.float32),
+    "xavier": lambda n_in, n_out, rng: (rng.standard_normal((n_out, n_in)) * (1 / n_in) ** 0.5).astype(xp.float32),
+    "he":     lambda n_in, n_out, rng: (rng.standard_normal((n_out, n_in)) * (2 / n_in) ** 0.5).astype(xp.float32),
 }
 
 
@@ -49,21 +70,21 @@ class Activation:
 
 ACTIVATIONS: dict[str, Activation] = {
     "sigmoid": Activation(
-        fn=lambda Z: 1 / (1 + np.exp(-Z)),
+        fn=lambda Z: 1 / (1 + xp.exp(-Z)),
         deriv=lambda A: A * (1 - A),
         default_init="xavier",
     ),
     "tanh": Activation(
-        fn=np.tanh,
+        fn=xp.tanh,
         deriv=lambda A: 1 - A * A,
         default_init="xavier",
     ),
     "relu": Activation(
-        fn=lambda Z: np.maximum(Z, 0),
+        fn=lambda Z: xp.maximum(Z, 0),
         deriv=lambda A: (A > 0).astype(A.dtype),
         default_init="he",
     ),
-    "identity": Activation(fn=lambda Z: Z, deriv=lambda A: np.ones_like(A), default_init="xavier"),
+    "identity": Activation(fn=lambda Z: Z, deriv=lambda A: xp.ones_like(A), default_init="xavier"),
 }
 
 # ---------------------------------------------------------------- im2col
@@ -75,8 +96,8 @@ def im2col(X: np.ndarray, KH: int, KW: int, stride: int, padding: int) -> np.nda
     """(N,C,H,W) -> (N*Hout*Wout, C*KH*KW). Vectorised; loop only over kernel."""
     N, C, H, W = X.shape
     Hout, Wout = _out_size(H, KH, stride, padding), _out_size(W, KW, stride, padding)
-    Xp = np.pad(X, ((0, 0), (0, 0), (padding, padding), (padding, padding))) if padding else X
-    cols = np.empty((N, C, KH, KW, Hout, Wout), dtype=X.dtype)
+    Xp = xp.pad(X, ((0, 0), (0, 0), (padding, padding), (padding, padding))) if padding else X
+    cols = xp.empty((N, C, KH, KW, Hout, Wout), dtype=X.dtype)
     for i in range(KH):
         for j in range(KW):
             cols[:, :, i, j, :, :] = Xp[:, :, i:i + stride * Hout:stride, j:j + stride * Wout:stride]
@@ -87,7 +108,7 @@ def col2im(dcols: np.ndarray, X_shape: tuple[int, ...], KH: int, KW: int,
            stride: int, padding: int) -> np.ndarray:
     N, C, H, W = X_shape
     Hout, Wout = _out_size(H, KH, stride, padding), _out_size(W, KW, stride, padding)
-    dXp = np.zeros((N, C, H + 2 * padding, W + 2 * padding), dtype=dcols.dtype)
+    dXp = xp.zeros((N, C, H + 2 * padding, W + 2 * padding), dtype=dcols.dtype)
     dcols6 = dcols.reshape(N, Hout, Wout, C, KH, KW).transpose(0, 3, 4, 5, 1, 2)
     for i in range(KH):
         for j in range(KW):
@@ -101,14 +122,14 @@ class Conv2D:
 
     def __init__(self, out_channels: int, in_channels: int, kernel_size: int,
                  stride: int = 1, padding: int = 0, initializer: Callable | str = "xavier",
-                 rng: np.random.Generator | None = None, dtype=np.float32):
+                 rng: xp.random.Generator | None = None, dtype=xp.float32):
         self.F, self.C, self.K = out_channels, in_channels, kernel_size
         self.stride, self.padding, self.dtype = stride, padding, dtype
-        rng = rng or np.random.default_rng(0)
+        rng = rng or xp.random.default_rng(0)
         init = INITIALIZERS[initializer] if isinstance(initializer, str) else initializer
         n_in = in_channels * kernel_size * kernel_size
-        W = init(n_in, out_channels, rng).reshape(out_channels, in_channels, kernel_size, kernel_size)
-        self.params = (W.astype(dtype), np.zeros((out_channels,), dtype=dtype))
+        W = xp.asarray(init(n_in, out_channels, rng)).reshape(out_channels, in_channels, kernel_size, kernel_size)
+        self.params = (W.astype(dtype), xp.zeros((out_channels,), dtype=dtype))
         self.out_shape: tuple[int, int, int] | None = None
 
     def forward(self, X: np.ndarray):
@@ -144,27 +165,27 @@ class MaxPool2D:
     def forward(self, X: np.ndarray):
         N, C, H, W = X.shape
         Hout, Wout = _out_size(H, self.P, self.S, 0), _out_size(W, self.P, self.S, 0)
-        out = np.full((N, C, Hout, Wout), -np.inf, dtype=X.dtype)
-        argmax = np.empty((N, C, Hout, Wout), dtype=np.int64)
+        out = xp.full((N, C, Hout, Wout), -xp.inf, dtype=X.dtype)
+        argmax = xp.empty((N, C, Hout, Wout), dtype=xp.int64)
         for i in range(self.P):
             for j in range(self.P):
                 patch = X[:, :, i:i + self.S * Hout:self.S, j:j + self.S * Wout:self.S]
                 mask = patch > out
                 # offset in flattened pool window for argmax routing
                 offset = i * self.P + j
-                argmax = np.where(mask, offset, argmax)
-                out = np.where(mask, patch, out)
+                argmax = xp.where(mask, offset, argmax)
+                out = xp.where(mask, patch, out)
         return out, (X.shape, argmax)
 
     def backward(self, dA: np.ndarray, cache):
         X_shape, argmax = cache
         N, C, Hout, Wout = dA.shape
-        dX = np.zeros(X_shape, dtype=dA.dtype)
+        dX = xp.zeros(X_shape, dtype=dA.dtype)
         for i in range(self.P):
             for j in range(self.P):
                 offset = i * self.P + j
                 sel = (argmax == offset)
-                dX[:, :, i:i + self.S * Hout:self.S, j:j + self.S * Wout:self.S] += np.where(sel, dA, 0)
+                dX[:, :, i:i + self.S * Hout:self.S, j:j + self.S * Wout:self.S] += xp.where(sel, dA, 0)
         return dX, None
 
 
@@ -183,11 +204,11 @@ class Dense:
 
     def __init__(self, in_features: int, out_features: int,
                  initializer: Callable | str = "xavier",
-                 rng: np.random.Generator | None = None, dtype=np.float32):
-        rng = rng or np.random.default_rng(0)
+                 rng: xp.random.Generator | None = None, dtype=xp.float32):
+        rng = rng or xp.random.default_rng(0)
         init = INITIALIZERS[initializer] if isinstance(initializer, str) else initializer
-        self.params = (init(in_features, out_features, rng).astype(dtype),
-                       np.zeros((out_features,), dtype=dtype))
+        self.params = (xp.asarray(init(in_features, out_features, rng)).astype(dtype),
+                       xp.zeros((out_features,), dtype=dtype))
         self.out = out_features
 
     def forward(self, X: np.ndarray):
@@ -208,8 +229,8 @@ def deep_copy_params(params):
 
 
 def flatten_params(params) -> np.ndarray:
-    return np.concatenate([p.ravel() for layer in params if layer is not None
-                           for p in layer]).astype(np.float32) if any(p is not None for p in params) else np.zeros(0, np.float32)
+    return xp.concatenate([p.ravel() for layer in params if layer is not None
+                           for p in layer]).astype(xp.float32) if any(p is not None for p in params) else xp.zeros(0, xp.float32)
 
 
 def unflatten_params(vec: np.ndarray, template) -> list:
@@ -237,14 +258,14 @@ class CNN:
 
     def __init__(self, input_shape=(1, 28, 28), conv_blocks=((8, 3, 1, 1, 2),),
                  hidden_sizes=(), output_size: int = 47, activation="relu",
-                 initializer: str | None = None, rng: np.random.Generator | None = None,
-                 dtype=np.float32):
+                 initializer: str | None = None, rng: xp.random.Generator | None = None,
+                 dtype=xp.float32):
         self.dtype, self.output_size = dtype, output_size
         self.activation = ACTIVATIONS[activation] if isinstance(activation, str) else activation
         if initializer is None:
             initializer = self.activation.default_init
         self.initializer = initializer
-        init_rng = rng if rng is not None else np.random.default_rng(0)
+        init_rng = rng if rng is not None else xp.random.default_rng(0)
 
         self.layers: list = []
         self._apply_activation: list[bool] = []  # per layer: apply activation after it
@@ -252,7 +273,7 @@ class CNN:
         for (filters, k, stride, pad, pool) in conv_blocks:
             conv = Conv2D(filters, shape[0], k, stride, pad, initializer, init_rng, dtype)
             self.layers.append(conv); self._apply_activation.append(True)
-            _, _, h, w = conv.forward(np.zeros((1, *shape), dtype=dtype))[0].shape
+            _, _, h, w = conv.forward(xp.zeros((1, *shape), dtype=dtype))[0].shape
             shape = (filters, h, w)
             if pool:
                 self.layers.append(MaxPool2D(pool)); self._apply_activation.append(False)
@@ -279,21 +300,21 @@ class CNN:
         return flatten_params(self.params)
 
     def set_params_vector(self, vec: np.ndarray):
-        self._set_params(unflatten_params(np.asarray(vec, dtype=self.dtype), self.params))
+        self._set_params(unflatten_params(xp.asarray(vec, dtype=self.dtype), self.params))
 
     @staticmethod
     def _softmax(Z: np.ndarray) -> np.ndarray:
-        e = np.exp(Z - Z.max(axis=1, keepdims=True))
+        e = xp.exp(Z - Z.max(axis=1, keepdims=True))
         return e / e.sum(axis=1, keepdims=True)
 
     @staticmethod
     def _one_hot(Y: np.ndarray, n: int) -> np.ndarray:
-        oh = np.zeros((Y.size, n), dtype=np.float32)
-        oh[np.arange(Y.size), Y] = 1
+        oh = xp.zeros((Y.size, n), dtype=xp.float32)
+        oh[xp.arange(Y.size), Y] = 1
         return oh
 
     def forward(self, X):
-        X = np.asarray(X, dtype=self.dtype)
+        X = xp.asarray(X, dtype=self.dtype)
         caches, A = [], X
         for layer, apply_act in zip(self.layers, self._apply_activation):
             Z, cache = layer.forward(A)
@@ -307,7 +328,7 @@ class CNN:
 
     def back_prop(self, caches, Y, normalize: bool = True):
         """Returns grads list per layer (None where no params). dZ=A-Y at softmax."""
-        Y = np.asarray(Y)
+        Y = xp.asarray(Y)
         m = Y.size
         A = caches[-1][2]
         probs = self._softmax(A)
@@ -337,23 +358,23 @@ class CNN:
 
     def loss(self, X, Y) -> float:
         probs, _ = self.forward(X)
-        p = np.clip(probs[np.arange(len(Y)), np.asarray(Y)], 1e-12, 1)
-        return float(-np.mean(np.log(p)))
+        p = xp.clip(probs[xp.arange(len(Y)), xp.asarray(Y)], 1e-12, 1)
+        return float(-xp.mean(xp.log(p)))
 
     def predict(self, X, batch_size: int = 512):
-        X = np.asarray(X)
-        preds = [np.argmax(self.forward(X[i:i + batch_size])[0], axis=1)
+        X = xp.asarray(X)
+        preds = [xp.argmax(self.forward(X[i:i + batch_size])[0], axis=1)
                  for i in range(0, len(X), batch_size)]
-        return np.concatenate(preds) if preds else np.zeros(0, dtype=int)
+        return xp.concatenate(preds) if preds else xp.zeros(0, dtype=int)
 
     def evaluate(self, X, Y) -> float:
-        return float(np.mean(self.predict(X) == np.asarray(Y)))
+        return float(xp.mean(self.predict(X) == xp.asarray(Y)))
 
     def fit(self, X, Y, epochs: int = 1, alpha: float = 0.1, batch_size: int = 128,
-            shuffle_rng: np.random.Generator | None = None, test_data=None) -> dict:
+            shuffle_rng: xp.random.Generator | None = None, test_data=None) -> dict:
         """Single-process SGD. history per epoch: train/test accuracy."""
-        X, Y = np.asarray(X, dtype=self.dtype), np.asarray(Y)
-        rng = shuffle_rng or np.random.default_rng(0)
+        X, Y = xp.asarray(X, dtype=self.dtype), xp.asarray(Y)
+        rng = shuffle_rng or np.random.default_rng(0)  # host: permutation de índices
         hist = {"train_acc": [], "test_acc": [], "steps": 0}
         for _ in range(epochs):
             idx = rng.permutation(len(Y))
@@ -396,7 +417,7 @@ class Worker:
         self.reset()
         step = self.step if step is None else step
         for Xb, Yb in micro_batches:
-            Yb = np.asarray(Yb)
+            Yb = xp.asarray(Yb)
             if Yb.size == 0:
                 continue
             _, caches = self.model.forward(Xb)
@@ -433,7 +454,7 @@ class Aggregator:
                 out.append(None)
                 continue
             summed = tuple(sum(m.grads[li][k] for m in messages if m.n_samples > 0) for k in range(len(layer_grads)))
-            out.append(tuple((s / total).astype(np.float32) for s in summed))
+            out.append(tuple((s / total).astype(xp.float32) for s in summed))
         return out
 
     aggregate_grads = aggregate
@@ -453,9 +474,9 @@ class Trainer:
     history: dict = field(default_factory=dict)
 
     def __post_init__(self):
-        self.train_x = np.asarray(self.train_x, dtype=np.float32)
-        self.train_y = np.asarray(self.train_y)
-        self.shuffle_rng = np.random.default_rng(self.seed + 1)
+        self.train_x = xp.asarray(self.train_x, dtype=xp.float32)
+        self.train_y = xp.asarray(self.train_y)
+        self.shuffle_rng = np.random.default_rng(self.seed + 1)  # host: permutation de índices
         self.workers = [Worker(i, self.model_template) for i in range(self.n_workers)]
         self.syncs = 0
 
@@ -576,7 +597,7 @@ def run_experiment(title, train_data, test_data, *, epochs: int = 2, alpha: floa
     equitativa entre los workers (ver :meth:`Trainer._shards`).
     """
     (Xtr, Ytr), (Xte, Yte) = train_data, test_data
-    init_rng = np.random.default_rng(seed)          # init generator
+    init_rng = xp.random.default_rng(seed)          # init generator (xp backend)
     model = CNN(rng=init_rng, **model_kwargs)
     if n_workers == 1 and shard_proportions is None:
         trainer = Trainer(model, Xtr, Ytr, n_workers=1, seed=seed,

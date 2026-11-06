@@ -3,7 +3,7 @@ import copy
 import numpy as np
 import pytest
 
-from cnn import CNN, Worker, Aggregator, Trainer, flatten_params
+from cnn import CNN, Worker, Aggregator, Trainer, flatten_params, xp, BACKEND
 
 EPS = 1e-3
 ATOL = 2e-3
@@ -14,7 +14,7 @@ def _small_model(seed=0, **kw):
     kw.setdefault("conv_blocks", ((2, 3, 1, 1, 2),))
     kw.setdefault("output_size", 3)
     kw.setdefault("activation", "relu")
-    return CNN(rng=np.random.default_rng(seed), **kw)
+    return CNN(rng=xp.random.default_rng(seed), **kw)
 
 
 def _loss(model, X, Y):
@@ -39,7 +39,7 @@ def _gradcheck(model, X, Y, param_indices):
 
 
 def test_gradient_check_conv_pool_dense():
-    rng = np.random.default_rng(42)
+    rng = xp.random.default_rng(42)
     X = rng.standard_normal((3, 1, 8, 8)).astype(np.float32)
     Y = np.array([0, 1, 2])
     model = _small_model(0)
@@ -59,7 +59,7 @@ def _split(X, Y, sizes):
 
 
 def test_equivalence_aggregated_vs_single_unequal_partial():
-    rng = np.random.default_rng(7)
+    rng = xp.random.default_rng(7)
     X = rng.standard_normal((11, 1, 8, 8)).astype(np.float32)  # 11: partial last batch
     Y = rng.integers(0, 3, size=11)
     for sizes in ([4, 4, 3], [5, 3, 3], [11], [1, 2, 8]):
@@ -78,7 +78,7 @@ def test_equivalence_aggregated_vs_single_unequal_partial():
 
 
 def test_sync_invariant_after_each_step():
-    rng = np.random.default_rng(1)
+    rng = xp.random.default_rng(1)
     X = rng.standard_normal((16, 1, 8, 8)).astype(np.float32)
     Y = rng.integers(0, 3, size=16)
     model = _small_model(5)
@@ -92,7 +92,7 @@ def test_sync_invariant_after_each_step():
 
 
 def test_n1_identical_to_non_distributed():
-    rng = np.random.default_rng(2)
+    rng = xp.random.default_rng(2)
     X = rng.standard_normal((16, 1, 8, 8)).astype(np.float32)
     Y = rng.integers(0, 3, size=16)
     # distributed N=1
@@ -116,7 +116,7 @@ def test_independent_copies_identical_start_no_shared_memory():
 
 def test_aggregator_weighted_not_simple_mean():
     # Unequal shards: simple mean would give wrong result; weighted must match single.
-    rng = np.random.default_rng(3)
+    rng = xp.random.default_rng(3)
     X = rng.standard_normal((10, 1, 8, 8)).astype(np.float32)
     Y = rng.integers(0, 3, size=10)
     model = _small_model(4)

@@ -9,6 +9,7 @@ dependencies = [
     "torch>=2.0",
     "torchvision>=0.20",
     "marimo>=0.25",
+    "cupy-cuda13x>=14.0",
 ]
 
 [tool.uv]

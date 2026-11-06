@@ -1,7 +1,6 @@
 # CNN EMNIST — NumPy + simulación distribuida
 
-Red neuronal convolucional implementada **desde cero solo con NumPy**
-(sin autograd, sin torch/cupy en el modelo) sobre EMNIST Balanced,
+Red neuronal convolucional implementada **desde cero con NumPy/CuPy** (alias `xp = cp` en GPU o `xp = np` como respaldo, sin autograd ni torch en el modelo) sobre EMNIST Balanced,
 con simulación de entrenamiento distribuido mediante acumulación de gradiente.
 
 ## Estructura
@@ -12,6 +11,18 @@ con simulación de entrenamiento distribuido mediante acumulación de gradiente.
 | `test_cnn.py` | Verificaciones obligatorias (pytest) |
 | `notebook.py` | Cuaderno [marimo](https://marimo.io) que evalúa solo los casos de workers (1, 2, 4, 8) con reparto equitativo |
 | `pyproject.toml` | Proyecto gestionado con [uv](https://docs.astral.sh/uv/) |
+
+## Backend NumPy/CuPy (`xp`)
+
+Al principio de `cnn.py` y del cuaderno hay un bloque `try/except`:
+intenta `import cupy as xp` (con GPU CUDA visible) y, si falla, usa
+`import numpy as xp`. `BACKEND`/`cnn.BACKEND` indica con qué librería se
+trabaja (`"CuPy"` o `"NumPy"`) y el cuaderno lo muestra en su primera celda.
+El modelo y las pruebas solo cambian el alias `np` → `xp`; el barajado de
+índices y `load_emnist` permanecen en NumPy (host). Se puede forzar el
+respaldo con `CNN_BACKEND=numpy uv run pytest -q`. Instalación de CuPy con uv:
+`uv add "cupy-cuda13x>=14.0"` (requiere controlador CUDA y GPU; aquí
+RTX 5050, CUDA 13.5).
 
 ## Técnica (del cuaderno de referencia)
 
