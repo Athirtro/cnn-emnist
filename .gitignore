@@ -13,3 +13,5 @@ wheels/
 /data/
 *.pyc
 __pycache__/
+
+__marimo__/
