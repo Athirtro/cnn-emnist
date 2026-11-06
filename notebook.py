@@ -18,7 +18,7 @@ app = marimo.App(width="medium")
 
 @app.cell
 def _(mo):
-    mo.md(r"""
+    mo.md("""
     # EMNIST — CNN NumPy/CuPy + Simulación Distribuida
 
     CNN implementada desde cero solo con **NumPy/CuPy** (`cnn.py`), sin autograd.
@@ -57,11 +57,11 @@ def _():
 
     assert CNN_BACKEND == BACKEND, f"backend del cuaderno ({BACKEND}) != del modelo ({CNN_BACKEND})"
     mo.md(_msg + f" Backend del modelo (`cnn.BACKEND`): **{CNN_BACKEND}**.")
-    return BACKEND, mo, xp
+    return (mo,)
 
 
 @app.cell
-def _(mo):
+def _():
     import matplotlib.pyplot as plt
     from cnn import load_emnist, run_experiment
 
@@ -82,7 +82,7 @@ def _(mo):
 
 @app.cell
 def _(load_emnist, mo):
-    FRACTION = 0.05  # fracción del train para desarrollo; pon 1.0 para el experimento completo
+    FRACTION = 1  # fracción del train para desarrollo; pon 1.0 para el experimento completo
     SEED = 0
     train_data, test_data = load_emnist(root="./data", fraction=FRACTION, download=True)
     mo.md(f"Train: {train_data[0].shape} | Test: {test_data[0].shape}")
@@ -96,21 +96,21 @@ def _(mo):
 
     Única variable: **número de workers** (1, 2, 4, 8). Todo lo demás es idéntico
     en todos los casos: Conv 3×3 (8 filtros) → ReLU → MaxPool 2×2 → Flatten →
-    Dense 47, init He, lote global 128, alpha y épocas fijos, misma semilla.
+    Dense 47, init He, lote global 512, alpha y épocas fijos, misma semilla.
 
     El dataset se reparte de forma **equitativa** entre los workers en cada época
     (`Trainer._shards` con `np.array_split`): tras el barajado global con semilla
     común, cada worker recibe una porción disjunta del mismo tamaño (±1 si el
     total no es divisible entre el número de workers), y en cada paso cada uno
-    procesa su parte del lote global. El lote global es por tanto fijo (128) y
-    el lote local es `128 / n_workers`.
+    procesa su parte del lote global. El lote global es por tanto fijo (512) y
+    el lote local es `512 / n_workers`.
     """)
     return
 
 
 @app.cell
 def _(SEED, mo, plt, run_experiment, test_data, train_data):
-    CONFIG = dict(epochs=3, alpha=0.1, seed=SEED, global_batch_size=128)
+    CONFIG = dict(epochs=40, alpha=0.3, seed=SEED, global_batch_size=4096)
     WORKER_CASES = (1, 2, 4, 8)
 
     texts, histories = [], {}
@@ -132,7 +132,7 @@ def _(SEED, mo, plt, run_experiment, test_data, train_data):
     plt.close(fig)
 
     mo.vstack([mo.md("\n\n".join(texts)), fig])
-    return CONFIG, WORKER_CASES, histories
+    return
 
 
 if __name__ == "__main__":
