@@ -10,7 +10,7 @@ con simulación de entrenamiento distribuido mediante acumulación de gradiente.
 |---|---|
 | `cnn.py` | Modelo (`CNN`, `Conv2D`, `MaxPool2D`, `Flatten`, `Dense`), registros `ACTIVATIONS`/`INITIALIZERS`, `Worker`, `Aggregator`, `Trainer`, `load_emnist`, `run_experiment`, `plot_history` |
 | `test_cnn.py` | Verificaciones obligatorias (pytest) |
-| `notebook.py` | Cuaderno [marimo](https://marimo.io) con caso base y experimentos A–D |
+| `notebook.py` | Cuaderno [marimo](https://marimo.io) que evalúa solo los casos de workers (1, 2, 4, 8) con reparto equitativo |
 | `pyproject.toml` | Proyecto gestionado con [uv](https://docs.astral.sh/uv/) |
 
 ## Técnica (del cuaderno de referencia)
@@ -62,7 +62,7 @@ para usar una fracción del train en desarrollo.
 ```bash
 uv sync                 # crea .venv e instala dependencias
 uv run pytest -q        # tests
-uv run marimo edit notebook.py   # abre el cuaderno (experimentos A–D)
+uv run marimo edit notebook.py   # abre el cuaderno (casos de workers)
 # o ejecutar el cuaderno como script:
 uv run python notebook.py
 ```
@@ -85,19 +85,23 @@ uv run pytest -q
    copias de workers es 0.
 4. **N=1 idéntico** al entrenamiento no distribuido.
 
-## Experimentos ablativos (cuaderno)
+## Evaluación por número de workers (cuaderno)
 
-Caso base: 1 worker, arquitectura base, ReLU, init He, lote 128, alpha fijo,
-épocas fijas. Cada experimento cambia **una sola** variable:
+El cuaderno evalúa el modelo **únicamente** con los diferentes casos de workers
+(1, 2, 4, 8). La única variable es el número de workers: arquitectura base
+(Conv 3×3/8 → ReLU → MaxPool 2×2 → Flatten → Dense 47), ReLU, init He, lote
+global 128 (el lote local es `128 / n_workers`), alpha y épocas fijos y misma
+semilla en todos los casos.
 
-- **A.** N workers (2, 4, 8) con lote global fijo (el lote local se reduce) →
-  las curvas coinciden con la base salvo ruido numérico.
-- **B.** N workers (2, 4, 8) con lote local fijo (el lote global crece).
-- **C.** Shards desiguales 50/30/20 % → valida la ponderación del agregador.
-- **D.** Pasos de acumulación por micro-lote (1, 2, 4) antes de sincronizar.
+El dataset se reparte de forma **equitativa** entre los workers en cada época:
+tras el barajado global con semilla común, `Trainer._shards` usa
+`np.array_split` para dar a cada worker una porción disjunta del mismo tamaño
+(±1 si el total no es divisible). Las curvas de precisión de prueba se dibujan
+en una única figura con la misma escala (0–1) y deben coincidir salvo ruido
+numérico.
 
 ## Criterios de aceptación
 
 - Todos los tests pasan (`uv run pytest -q`).
-- Curvas de A con distinto N coinciden con la base salvo ruido numérico.
+- Curvas con distinto N coinciden salvo ruido numérico.
 - Instrucciones reproducibles con semilla explícita (`seed=0`).

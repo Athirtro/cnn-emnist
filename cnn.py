@@ -467,9 +467,16 @@ class Trainer:
         return max(1, g // self.n_workers)
 
     def _shards(self, idx: np.ndarray) -> list[np.ndarray]:
-        props = self.shard_proportions or [1 / self.n_workers] * self.n_workers
-        assert len(props) == self.n_workers
-        sizes = [int(round(p * len(idx))) for p in props[:-1]]
+        """Reparto equitativo por defecto: tamaños difieren como máximo en 1.
+
+        ``np.array_split`` reparte las muestras barajadas (sin solapamiento)
+        en ``n_workers`` porciones de igual tamaño (±1 si N no es divisible).
+        Solo si se pasa ``shard_proportions`` se usa un reparto desigual.
+        """
+        if self.shard_proportions is None:
+            return list(np.array_split(idx, self.n_workers))
+        assert len(self.shard_proportions) == self.n_workers
+        sizes = [int(round(p * len(idx))) for p in self.shard_proportions[:-1]]
         sizes.append(len(idx) - sum(sizes))
         shards, off = [], 0
         for s in sizes:
@@ -563,7 +570,11 @@ def run_experiment(title, train_data, test_data, *, epochs: int = 2, alpha: floa
                    seed: int = 0, n_workers: int = 1, global_batch_size: int = 128,
                    local_batch_size: int | None = None, accumulate_steps: int = 1,
                    shard_proportions=None, **model_kwargs):
-    """Train, evaluate, return (model, texto, figura)."""
+    """Train, evaluate, return (model, texto, figura, historial).
+
+    Por defecto (``shard_proportions=None``) el dataset se reparte de forma
+    equitativa entre los workers (ver :meth:`Trainer._shards`).
+    """
     (Xtr, Ytr), (Xte, Yte) = train_data, test_data
     init_rng = np.random.default_rng(seed)          # init generator
     model = CNN(rng=init_rng, **model_kwargs)
@@ -585,4 +596,4 @@ def run_experiment(title, train_data, test_data, *, epochs: int = 2, alpha: floa
             f"Bytes de gradiente por worker: {hist['bytes_per_worker'][0] if hist['bytes_per_worker'] else 0}\n"
             f"- Muestras por worker (última época): {hist['samples_per_worker'][-1] if hist['samples_per_worker'] else []}")
     fig = plot_history({"Entrenamiento": hist["train_acc"], "Prueba": hist["test_acc"]}, title=title)
-    return trainer.model, text, fig
+    return trainer.model, text, fig, hist
